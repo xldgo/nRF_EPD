@@ -24,36 +24,14 @@ jobs:
       - name: Build nRF52811 application
         run: make -f Makefile.nRF52 -j2
 
-      - name: Generate size analysis
-        run: |
-          TOOL=/usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin
-          ELF=_build/nrf52811_xxaa.out
-          $TOOL/arm-none-eabi-size "$ELF" | tee size-summary.txt
-          $TOOL/arm-none-eabi-size -A "$ELF" > size-sections.txt
-          $TOOL/arm-none-eabi-nm -S --size-sort --radix=d -l "$ELF" > size-symbols.txt
-          $TOOL/arm-none-eabi-objdump -d -C "$ELF" > disasm.txt
-          awk '
-            /^[0-9a-f]+ <.*>:/ { fn=$0 }
-            /bl.*<(__aeabi_dmul|__muldf3|__aeabi_dadd|__adddf3|__aeabi_dsub|__subdf3|__udivmoddi4|vsnprintf|_vsnprintf_r|_svfprintf_r|_svfiprintf_r)>/ {
-              print fn; print "  " $0
-            }
-          ' disasm.txt > runtime-callers.txt
-          echo 'Runtime-heavy callers:'
-          cat runtime-callers.txt
-          echo 'Largest symbols:'
-          tail -n 100 size-symbols.txt
+      - name: Show image size
+        run: /usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin/arm-none-eabi-size _build/nrf52811_xxaa.out
 
-      - name: Upload application and size reports
+      - name: Upload application HEX
         uses: actions/upload-artifact@v4
         with:
-          name: hvx-diagnostic-build
-          path: |
-            _build/nrf52811_xxaa.hex
-            _build/nrf52811_xxaa.out
-            size-summary.txt
-            size-sections.txt
-            size-symbols.txt
-            runtime-callers.txt
+          name: hvx-diagnostic-app-hex
+          path: _build/nrf52811_xxaa.hex
           if-no-files-found: error
 
   package-ota:
@@ -63,17 +41,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download application build
+      - name: Download application HEX
         uses: actions/download-artifact@v4
         with:
-          name: hvx-diagnostic-build
-          path: _ci_build
+          name: hvx-diagnostic-app-hex
+          path: _ci_hex
 
       - name: Build signed Secure DFU package
         shell: pwsh
         run: |
           $nrfutil = Resolve-Path .\tools\bin\nrfutil.exe
-          $hex = Resolve-Path .\_ci_build\_build\nrf52811_xxaa.hex
+          $hex = Resolve-Path .\_ci_hex\nrf52811_xxaa.hex
           $key = Resolve-Path .\tools\priv.pem
           & $nrfutil pkg generate `
             --application $hex `
