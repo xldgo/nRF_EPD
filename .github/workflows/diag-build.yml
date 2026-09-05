@@ -1,0 +1,38 @@
+name: Build HVX diagnostic firmware
+
+on:
+  push:
+    branches:
+      - diag/hvx-f455-0x21
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ARM GCC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi make
+          arm-none-eabi-gcc --version
+
+      - name: Build nRF52811 application
+        run: |
+          make -f Makefile.nRF52 \
+            GNU_INSTALL_ROOT=/usr/bin/ \
+            GNU_VERSION="$(arm-none-eabi-gcc -dumpversion)" \
+            GNU_PREFIX=arm-none-eabi \
+            -j2
+
+      - name: Show image size
+        run: arm-none-eabi-size _build/nrf52811_xxaa.out
+
+      - name: Upload application HEX
+        uses: actions/upload-artifact@v4
+        with:
+          name: hvx-diagnostic-nrf52811
+          path: _build/nrf52811_xxaa.hex
+          if-no-files-found: error
