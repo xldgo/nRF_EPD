@@ -65,3 +65,14 @@
 	pinctrl-1 = <&epd_spi_sleep>;
 	pinctrl-names = "default", "sleep";
 };
+
+/* nRF52811 defaults to Nordic's SoftDevice Controller in NCS 3.4.
+ * The Zephyr split Link Layer uses less RAM, which matters on the 24 KiB part.
+ */
+&bt_hci_sdc {
+	status = "disabled";
+};
+
+&bt_hci_controller {
+	status = "okay";
+};
