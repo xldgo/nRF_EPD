@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.0
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout application
@@ -41,7 +44,6 @@ jobs:
           west build -d "$GITHUB_WORKSPACE/build-zephyr" -t ram_report
 
       - name: Check 55 KiB application budget
-        shell: bash
         run: |
           set -euo pipefail
           line="$(arm-zephyr-eabi-size "$GITHUB_WORKSPACE/build-zephyr/zephyr/zephyr.elf" | tail -n 1)"
