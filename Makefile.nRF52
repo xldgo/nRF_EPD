@@ -67,7 +67,8 @@ SRC_FILES += \
   $(PROJ_DIR)/main.c \
   $(PROJ_DIR)/EPD/EPD_config.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
-  $(PROJ_DIR)/EPD/EPD_service.c \
+  $(PROJ_DIR)/EPD/EPD_diag.c \
+  $(PROJ_DIR)/EPD/EPD_service_diag.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/GUI/GUI.c \
   $(PROJ_DIR)/GUI/Lunar.c \
