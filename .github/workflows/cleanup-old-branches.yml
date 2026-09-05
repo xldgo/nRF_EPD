@@ -1,0 +1,31 @@
+name: Cleanup old diagnostic branches
+
+on:
+  push:
+    branches:
+      - diag/hvx-f455-0x21
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete obsolete branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          for ref in \
+            diag/hvx-f455-0x21-lto \
+            diag/hvx-f455-0x21-safe \
+            diag/hvx-notification-0x21 \
+            measure/f455-size \
+            noop-temp-should-not-create \
+            cleanup-test-should-not-create \
+            cleanup-temp-final
+          do
+            echo "Deleting $ref"
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${ref}"
+          done
