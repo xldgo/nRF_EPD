@@ -40,13 +40,14 @@ jobs:
       - name: Show ROM and RAM reports
         run: |
           cd /tmp/ncs
-          west build -d "$GITHUB_WORKSPACE/build-zephyr" -t rom_report
-          west build -d "$GITHUB_WORKSPACE/build-zephyr" -t ram_report
+          west build -d "$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal" -t rom_report
+          west build -d "$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal" -t ram_report
 
       - name: Check 55 KiB application budget
         run: |
           set -euo pipefail
-          line="$(arm-zephyr-eabi-size "$GITHUB_WORKSPACE/build-zephyr/zephyr/zephyr.elf" | tail -n 1)"
+          elf="$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal/zephyr/zephyr.elf"
+          line="$(arm-zephyr-eabi-size "$elf" | tail -n 1)"
           text="$(awk '{print $1}' <<<"$line")"
           data="$(awk '{print $2}' <<<"$line")"
           flash=$((text + data))
@@ -58,8 +59,8 @@ jobs:
         with:
           name: zephyr-nrf52811-minimal-draw
           path: |
-            build-zephyr/zephyr/zephyr.hex
-            build-zephyr/zephyr/zephyr.bin
-            build-zephyr/zephyr/zephyr.elf
-            build-zephyr/zephyr/zephyr.map
+            build-zephyr/zephyr_minimal/zephyr/zephyr.hex
+            build-zephyr/zephyr_minimal/zephyr/zephyr.bin
+            build-zephyr/zephyr_minimal/zephyr/zephyr.elf
+            build-zephyr/zephyr_minimal/zephyr/zephyr.map
           if-no-files-found: error
