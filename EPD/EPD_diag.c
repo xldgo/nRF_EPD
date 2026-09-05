@@ -20,7 +20,7 @@ typedef enum {
 
 static ble_epd_t *m_epd;
 static ble_gatts_char_handles_t m_diag_handles;
-static epd_ble_diag_t m_diag;
+static epd_ble_diag_t m_diag __attribute__((aligned(4)));
 
 static void epd_diag_snapshot_transfer(void) {
     if (m_epd == NULL) return;
@@ -102,7 +102,7 @@ uint32_t epd_diag_hvx(uint16_t conn_handle, ble_gatts_hvx_params_t const *p_hvx_
 
     NRF_LOG_INFO("[EPD_DIAG] HVX kind=%u handle=0x%04x rc=0x%08x",
                  (unsigned)kind,
-                 p_hvx_params != NULL ? p_hvx_params->handle : BLE_GATT_HANDLE_INVALID,
+                 p_hvx_params != NULL ? p_hvx_params->handle : 0u,
                  (unsigned)rc);
 
     return rc;
