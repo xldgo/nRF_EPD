@@ -13,22 +13,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install ARM GCC
+      - name: Install ARM GCC 9.3.1
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi make
-          arm-none-eabi-gcc --version
+          curl -fL --retry 3 \
+            -o /tmp/gcc-arm-none-eabi.tar.bz2 \
+            https://developer.arm.com/-/media/Files/downloads/gnu-rm/9-2020q2/gcc-arm-none-eabi-9-2020-q2-update-x86_64-linux.tar.bz2
+          sudo tar -xjf /tmp/gcc-arm-none-eabi.tar.bz2 -C /usr/local
+          /usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin/arm-none-eabi-gcc --version
 
       - name: Build nRF52811 application
-        run: |
-          make -f Makefile.nRF52 \
-            GNU_INSTALL_ROOT=/usr/bin/ \
-            GNU_VERSION="$(arm-none-eabi-gcc -dumpversion)" \
-            GNU_PREFIX=arm-none-eabi \
-            -j2
+        run: make -f Makefile.nRF52 -j2
 
       - name: Show image size
-        run: arm-none-eabi-size _build/nrf52811_xxaa.out
+        run: /usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin/arm-none-eabi-size _build/nrf52811_xxaa.out
 
       - name: Upload application HEX
         uses: actions/upload-artifact@v4
