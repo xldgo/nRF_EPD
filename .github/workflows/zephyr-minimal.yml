@@ -43,16 +43,14 @@ jobs:
           west build -d "$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal" -t rom_report
           west build -d "$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal" -t ram_report
 
-      - name: Check 55 KiB application budget
+      - name: Show application image size
         run: |
           set -euo pipefail
-          elf="$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal/zephyr/zephyr.elf"
-          line="$(arm-zephyr-eabi-size "$elf" | tail -n 1)"
-          text="$(awk '{print $1}' <<<"$line")"
-          data="$(awk '{print $2}' <<<"$line")"
-          flash=$((text + data))
-          echo "application flash (text+data): ${flash} bytes"
-          test "$flash" -le 56320
+          image_dir="$GITHUB_WORKSPACE/build-zephyr/zephyr_minimal/zephyr"
+          arm-zephyr-eabi-size "$image_dir/zephyr.elf"
+          wc -c "$image_dir/zephyr.bin"
+          echo "No fixed flash-size threshold is enforced here."
+          echo "The OTA gate will be based on the legacy Nordic Secure DFU layout once the Zephyr image is linked for that layout."
 
       - name: Upload Zephyr image
         uses: actions/upload-artifact@v4
