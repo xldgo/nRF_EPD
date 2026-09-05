@@ -30,6 +30,43 @@ jobs:
       - name: Upload application HEX
         uses: actions/upload-artifact@v4
         with:
-          name: hvx-diagnostic-nrf52811
+          name: hvx-diagnostic-app-hex
           path: _build/nrf52811_xxaa.hex
+          if-no-files-found: error
+
+  package-ota:
+    needs: build
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download application HEX
+        uses: actions/download-artifact@v4
+        with:
+          name: hvx-diagnostic-app-hex
+          path: _ci_hex
+
+      - name: Build signed Secure DFU package
+        shell: pwsh
+        run: |
+          $nrfutil = Resolve-Path .\tools\bin\nrfutil.exe
+          $hex = Resolve-Path .\_ci_hex\nrf52811_xxaa.hex
+          $key = Resolve-Path .\tools\priv.pem
+          & $nrfutil pkg generate `
+            --application $hex `
+            --key-file $key `
+            --hw-version 52 `
+            --sd-req 0x126 `
+            --sd-id 0x126 `
+            --application-version 0x21 `
+            .\nrf-epd-hvx-diag-0x21-ota.zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item .\nrf-epd-hvx-diag-0x21-ota.zip | Format-List Name,Length
+
+      - name: Upload signed BLE DFU ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: hvx-diagnostic-ota-0x21
+          path: nrf-epd-hvx-diag-0x21-ota.zip
           if-no-files-found: error
