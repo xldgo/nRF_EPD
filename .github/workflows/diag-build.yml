@@ -24,14 +24,27 @@ jobs:
       - name: Build nRF52811 application
         run: make -f Makefile.nRF52 -j2
 
-      - name: Show image size
-        run: /usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin/arm-none-eabi-size _build/nrf52811_xxaa.out
+      - name: Generate size analysis
+        run: |
+          TOOL=/usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin
+          $TOOL/arm-none-eabi-size _build/nrf52811_xxaa.out | tee size-summary.txt
+          $TOOL/arm-none-eabi-size -A _build/nrf52811_xxaa.out > size-sections.txt
+          $TOOL/arm-none-eabi-nm -S --size-sort --radix=d _build/nrf52811_xxaa.out > size-symbols.txt
+          $TOOL/arm-none-eabi-readelf -S -W _build/nrf52811_xxaa.out > elf-sections.txt
+          echo 'Largest symbols:'
+          tail -n 80 size-symbols.txt
 
-      - name: Upload application HEX
+      - name: Upload application and size reports
         uses: actions/upload-artifact@v4
         with:
-          name: hvx-diagnostic-app-hex
-          path: _build/nrf52811_xxaa.hex
+          name: hvx-diagnostic-build
+          path: |
+            _build/nrf52811_xxaa.hex
+            _build/nrf52811_xxaa.out
+            size-summary.txt
+            size-sections.txt
+            size-symbols.txt
+            elf-sections.txt
           if-no-files-found: error
 
   package-ota:
@@ -41,17 +54,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download application HEX
+      - name: Download application build
         uses: actions/download-artifact@v4
         with:
-          name: hvx-diagnostic-app-hex
-          path: _ci_hex
+          name: hvx-diagnostic-build
+          path: _ci_build
 
       - name: Build signed Secure DFU package
         shell: pwsh
         run: |
           $nrfutil = Resolve-Path .\tools\bin\nrfutil.exe
-          $hex = Resolve-Path .\_ci_hex\nrf52811_xxaa.hex
+          $hex = Resolve-Path .\_ci_build\_build\nrf52811_xxaa.hex
           $key = Resolve-Path .\tools\priv.pem
           & $nrfutil pkg generate `
             --application $hex `
