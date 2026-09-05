@@ -10,6 +10,9 @@
 		/delete-property/ zephyr,uart-mcumgr;
 		/delete-property/ zephyr,bt-mon-uart;
 		/delete-property/ zephyr,bt-c2h-uart;
+
+		/* nRF52811.dtsi points this at bt_hci_sdc by default. */
+		zephyr,bt-hci = &bt_hci_controller;
 	};
 
 	zephyr,user {
