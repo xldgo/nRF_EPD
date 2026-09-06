@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install ARM GCC 9.3.1
         run: |
@@ -32,7 +32,7 @@ jobs:
         run: /usr/local/gcc-arm-none-eabi-9-2020-q2-update/bin/arm-none-eabi-size _build/nrf52811_xxaa.out
 
       - name: Upload application artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bw-partial-app
           if-no-files-found: error
@@ -43,7 +43,7 @@ jobs:
             _build/nrf52811_xxaa.map
 
       - name: Upload application HEX for OTA job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bw-partial-app-hex
           path: _build/nrf52811_xxaa.hex
@@ -55,10 +55,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download application HEX
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: bw-partial-app-hex
           path: _ci_hex
@@ -81,7 +81,7 @@ jobs:
           Get-Item .\nrf-epd-bw-partial-0x21-ota.zip | Format-List Name,Length
 
       - name: Upload signed BLE DFU ZIP
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bw-partial-ota-0x21
           path: nrf-epd-bw-partial-0x21-ota.zip
