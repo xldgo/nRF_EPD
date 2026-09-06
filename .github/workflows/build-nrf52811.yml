@@ -1,0 +1,47 @@
+name: Build nRF52811 firmware
+
+on:
+  push:
+    branches:
+      - main
+      - feature/bw-partial-image
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GNU Arm Embedded toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Show toolchain version
+        run: arm-none-eabi-gcc --version
+
+      - name: Build nRF52811 application
+        run: |
+          make -f Makefile.nRF52 clean
+          make -f Makefile.nRF52 nrf52811_xxaa GNU_INSTALL_ROOT=/usr/bin/
+
+      - name: Show firmware size
+        run: arm-none-eabi-size _build/nrf52811_xxaa.out
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrf52811-firmware-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            _build/nrf52811_xxaa.hex
+            _build/nrf52811_xxaa.bin
+            _build/nrf52811_xxaa.out
+            _build/nrf52811_xxaa.map
