@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "EPD_partial.h"
 #include "app_scheduler.h"
 #include "ble_srv_common.h"
 #include "main.h"
@@ -18,6 +19,8 @@
  * intentionally unchanged in this refactor. */
 #define EPD_CFG_52811 {0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x07, 0xFF, 0x12, 0x07}
 
+static bw_partial_state_t s_bw_partial;
+
 static uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
     uint16_t crc = 0xFFFF;
     for (uint16_t i = 0; i < len; i++) {
@@ -27,6 +30,16 @@ static uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
         }
     }
     return crc;
+}
+
+static uint16_t read_le16(const uint8_t* p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static void transfer_reset(image_transfer_ctx_t* ctx, bool keep_session_id) {
+    uint8_t session_id = keep_session_id ? ctx->session_id : 0;
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->session_id = session_id;
 }
 
 static void send_block_response(ble_epd_t* p_epd, uint16_t block_id, uint8_t status) {
@@ -55,6 +68,31 @@ static void send_transfer_status(ble_epd_t* p_epd) {
     }
     memcpy(&rsp[7], p_epd->transfer_ctx.block_bitmap, bitmap_len);
     ble_epd_string_send(p_epd, rsp, 7 + bitmap_len);
+}
+
+static void send_partial_response(ble_epd_t* p_epd,
+                                  uint8_t command,
+                                  epd_partial_status_t status) {
+    uint8_t rsp[] = {
+        EPD_RSP_BW_PARTIAL,
+        command,
+        (uint8_t)status,
+        (uint8_t)(s_bw_partial.partial_refresh_count & 0xFF),
+        (uint8_t)(s_bw_partial.partial_refresh_count >> 8),
+    };
+    ble_epd_string_send(p_epd, rsp, sizeof(rsp));
+}
+
+static void partial_cancel_transfer(ble_epd_t* p_epd) {
+    s_bw_partial.active = 0;
+    s_bw_partial.block_payload_size = 0;
+    transfer_reset(&p_epd->transfer_ctx, true);
+}
+
+static void partial_invalidate_base(ble_epd_t* p_epd) {
+    partial_cancel_transfer(p_epd);
+    s_bw_partial.base_valid = 0;
+    s_bw_partial.partial_refresh_count = 0;
 }
 
 static void epd_cmd_queue_init(epd_cmd_queue_t* queue) {
@@ -101,7 +139,9 @@ static bool is_urgent_command(uint8_t cmd) {
            cmd == EPD_CMD_CFG_ERASE ||
            cmd == EPD_CMD_WRITE_BLOCK ||
            cmd == EPD_CMD_QUERY_STATUS ||
-           cmd == EPD_CMD_RESET_TRANSFER;
+           cmd == EPD_CMD_RESET_TRANSFER ||
+           cmd == EPD_CMD_BW_PARTIAL_BEGIN ||
+           cmd == EPD_CMD_BW_PARTIAL_REFRESH;
 }
 
 static void epd_process_next_command(void* p_event_data, uint16_t event_size);
@@ -139,6 +179,216 @@ static void epd_send_mtu(ble_epd_t* p_epd) {
     ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
 }
 
+static bool partial_driver_available(ble_epd_t* p_epd) {
+    return p_epd->epd != NULL &&
+           p_epd->epd->drv != NULL &&
+           p_epd->epd->drv->init_partial != NULL &&
+           p_epd->epd->drv->write_image_partial != NULL &&
+           p_epd->epd->drv->refresh_partial != NULL;
+}
+
+static epd_partial_status_t partial_begin(ble_epd_t* p_epd,
+                                          const uint8_t* p_data,
+                                          uint16_t length) {
+    if (length != 10) {
+        return EPD_PARTIAL_ERR_PARAM;
+    }
+    if (!partial_driver_available(p_epd)) {
+        return EPD_PARTIAL_ERR_UNSUPPORTED;
+    }
+
+    uint16_t x = read_le16(&p_data[1]);
+    uint16_t y = read_le16(&p_data[3]);
+    uint16_t width = read_le16(&p_data[5]);
+    uint16_t height = read_le16(&p_data[7]);
+    uint8_t flags = p_data[9];
+
+    if (flags != 0 || width == 0 || height == 0 ||
+        (x & 7u) != 0 || (width & 7u) != 0 ||
+        x + width > p_epd->epd->width ||
+        y + height > p_epd->epd->height) {
+        return EPD_PARTIAL_ERR_PARAM;
+    }
+
+    /* V1 deliberately validates only the full-screen path on hardware. */
+    if (x != 0 || y != 0 ||
+        width != p_epd->epd->width || height != p_epd->epd->height) {
+        return EPD_PARTIAL_ERR_UNSUPPORTED;
+    }
+
+    if (!s_bw_partial.base_valid) {
+        return EPD_PARTIAL_ERR_NEED_FULL_REFRESH;
+    }
+
+    partial_cancel_transfer(p_epd);
+    s_bw_partial.x = x;
+    s_bw_partial.y = y;
+    s_bw_partial.width = width;
+    s_bw_partial.height = height;
+    s_bw_partial.bytes_per_line = width / 8;
+    s_bw_partial.total_bytes =
+        (uint32_t)s_bw_partial.bytes_per_line * (uint32_t)height;
+    s_bw_partial.flags = flags;
+    s_bw_partial.active = 1;
+
+    p_epd->transfer_ctx.transfer_active = true;
+    p_epd->epd->drv->init_partial(p_epd->epd);
+
+    NRF_LOG_INFO("[EPD]: BW partial session begin: %dx%d, bytes=%lu\n",
+                 width, height, (unsigned long)s_bw_partial.total_bytes);
+    return EPD_PARTIAL_OK;
+}
+
+static bool partial_write_span(ble_epd_t* p_epd,
+                               uint32_t logical_offset,
+                               const uint8_t* data,
+                               uint16_t len) {
+    if (!s_bw_partial.active || len == 0) {
+        return false;
+    }
+
+    uint32_t end_offset = logical_offset + len;
+    if (end_offset > s_bw_partial.total_bytes) {
+        return false;
+    }
+
+    uint16_t consumed = 0;
+    while (consumed < len) {
+        uint32_t offset = logical_offset + consumed;
+        uint16_t row = (uint16_t)(offset / s_bw_partial.bytes_per_line);
+        uint16_t col = (uint16_t)(offset % s_bw_partial.bytes_per_line);
+        uint16_t remaining = len - consumed;
+
+        /* When aligned to a row boundary, combine as many complete rows from
+         * this BLE block as possible into one driver call. */
+        if (col == 0 && remaining >= s_bw_partial.bytes_per_line) {
+            uint16_t rows = remaining / s_bw_partial.bytes_per_line;
+            p_epd->epd->drv->write_image_partial(
+                p_epd->epd,
+                (uint8_t*)&data[consumed],
+                NULL,
+                s_bw_partial.x,
+                s_bw_partial.y + row,
+                s_bw_partial.width,
+                rows);
+            uint16_t bytes = rows * s_bw_partial.bytes_per_line;
+            consumed += bytes;
+            continue;
+        }
+
+        uint16_t bytes_to_row_end = s_bw_partial.bytes_per_line - col;
+        uint16_t bytes = remaining < bytes_to_row_end ? remaining : bytes_to_row_end;
+        p_epd->epd->drv->write_image_partial(
+            p_epd->epd,
+            (uint8_t*)&data[consumed],
+            NULL,
+            s_bw_partial.x + col * 8,
+            s_bw_partial.y + row,
+            bytes * 8,
+            1);
+        consumed += bytes;
+    }
+    return true;
+}
+
+static void partial_write_block(ble_epd_t* p_epd,
+                                uint16_t block_id,
+                                uint16_t total_blocks,
+                                const uint8_t* payload,
+                                uint16_t payload_len) {
+    if (!s_bw_partial.active || !p_epd->transfer_ctx.transfer_active) {
+        send_block_response(p_epd, block_id, 0x03);
+        return;
+    }
+
+    if (block_id >= EPD_MAX_BLOCKS || block_id >= total_blocks ||
+        total_blocks == 0 || total_blocks > EPD_MAX_BLOCKS || payload_len == 0) {
+        send_block_response(p_epd, block_id, 0x02);
+        return;
+    }
+
+    if (s_bw_partial.block_payload_size == 0) {
+        if (block_id != 0) {
+            /* Block 0 establishes the fixed payload stride for offset mapping. */
+            send_block_response(p_epd, block_id, 0x03);
+            return;
+        }
+        s_bw_partial.block_payload_size = payload_len;
+        uint16_t expected_blocks = (uint16_t)(
+            (s_bw_partial.total_bytes + payload_len - 1) / payload_len);
+        if (expected_blocks != total_blocks || expected_blocks > EPD_MAX_BLOCKS) {
+            s_bw_partial.block_payload_size = 0;
+            send_block_response(p_epd, block_id, 0x02);
+            return;
+        }
+        p_epd->transfer_ctx.total_blocks = total_blocks;
+    }
+
+    if (p_epd->transfer_ctx.total_blocks != total_blocks) {
+        send_block_response(p_epd, block_id, 0x02);
+        return;
+    }
+
+    uint32_t logical_offset =
+        (uint32_t)block_id * (uint32_t)s_bw_partial.block_payload_size;
+    if (logical_offset >= s_bw_partial.total_bytes) {
+        send_block_response(p_epd, block_id, 0x02);
+        return;
+    }
+
+    uint32_t bytes_left = s_bw_partial.total_bytes - logical_offset;
+    uint16_t expected_len = bytes_left > s_bw_partial.block_payload_size
+                                ? s_bw_partial.block_payload_size
+                                : (uint16_t)bytes_left;
+    if (payload_len != expected_len) {
+        send_block_response(p_epd, block_id, 0x02);
+        return;
+    }
+
+    uint16_t byte_idx = block_id / 8;
+    uint8_t bit_idx = block_id % 8;
+    if (!(p_epd->transfer_ctx.block_bitmap[byte_idx] & (1u << bit_idx))) {
+        if (!partial_write_span(p_epd, logical_offset, payload, payload_len)) {
+            send_block_response(p_epd, block_id, 0x03);
+            return;
+        }
+        p_epd->transfer_ctx.block_bitmap[byte_idx] |= (1u << bit_idx);
+        p_epd->transfer_ctx.received_blocks++;
+    }
+
+    send_block_response(p_epd, block_id, 0x00);
+}
+
+static epd_partial_status_t partial_refresh(ble_epd_t* p_epd) {
+    if (!s_bw_partial.active || !p_epd->transfer_ctx.transfer_active) {
+        return EPD_PARTIAL_ERR_STATE;
+    }
+    if (p_epd->transfer_ctx.total_blocks == 0 ||
+        p_epd->transfer_ctx.received_blocks != p_epd->transfer_ctx.total_blocks) {
+        return EPD_PARTIAL_ERR_INCOMPLETE;
+    }
+
+    p_epd->is_refreshing = true;
+    p_epd->epd->drv->refresh_partial(
+        p_epd->epd,
+        s_bw_partial.x,
+        s_bw_partial.y,
+        s_bw_partial.width,
+        s_bw_partial.height);
+    p_epd->is_refreshing = false;
+
+    if (s_bw_partial.partial_refresh_count != UINT16_MAX) {
+        s_bw_partial.partial_refresh_count++;
+    }
+    s_bw_partial.base_valid = 1;
+    s_bw_partial.active = 0;
+    p_epd->transfer_ctx.transfer_active = false;
+
+    NRF_LOG_INFO("[EPD]: BW partial refresh complete, count=%d\n",
+                 s_bw_partial.partial_refresh_count);
+    return EPD_PARTIAL_OK;
+}
+
 static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
     EPD_GPIO_Init();
@@ -155,6 +405,7 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         nrf_delay_ms(200);
         EPD_GPIO_Uninit();
     }
+    partial_invalidate_base(p_epd);
     app_feed_wdt();
 }
 
@@ -171,6 +422,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (length < 8) {
                 break;
             }
+            partial_invalidate_base(p_epd);
             p_epd->config.mosi_pin = p_data[1];
             p_epd->config.sclk_pin = p_data[2];
             p_epd->config.cs_pin = p_data[3];
@@ -188,6 +440,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             break;
 
         case EPD_CMD_INIT:
+            partial_invalidate_base(p_epd);
             p_epd->epd = epd_init((epd_model_id_t)(
                 length > 1 ? p_data[1] : p_epd->config.model_id));
             if (p_epd->epd != NULL && p_epd->epd->id != p_epd->config.model_id) {
@@ -198,18 +451,24 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             epd_send_voltage(p_epd);
             break;
 
-        case EPD_CMD_CLEAR:
+        case EPD_CMD_CLEAR: {
             if (p_epd->epd == NULL) {
                 break;
             }
             epd_use_picture_mode(p_epd);
-            p_epd->epd->drv->clear(p_epd->epd, length > 1 ? p_data[1] : true);
+            bool refresh = length > 1 ? p_data[1] : true;
+            partial_cancel_transfer(p_epd);
+            p_epd->epd->drv->clear(p_epd->epd, refresh);
+            s_bw_partial.base_valid = refresh ? 1 : 0;
+            s_bw_partial.partial_refresh_count = 0;
             break;
+        }
 
         case EPD_CMD_SEND_COMMAND:
             if (length < 2) {
                 break;
             }
+            partial_invalidate_base(p_epd);
             epd_use_picture_mode(p_epd);
             EPD_WriteCmd(p_data[1]);
             break;
@@ -218,6 +477,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (length < 2) {
                 break;
             }
+            partial_invalidate_base(p_epd);
             epd_use_picture_mode(p_epd);
             EPD_WriteData(&p_data[1], length - 1);
             break;
@@ -226,17 +486,23 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (p_epd->epd == NULL) {
                 break;
             }
-            /* 0x05 intentionally remains full-refresh only. */
+            /* 0x05 intentionally remains full-refresh only. A legacy full
+             * refresh may contain red, so it conservatively invalidates the
+             * BW-partial base regardless of the uploaded planes. */
+            partial_cancel_transfer(p_epd);
             epd_use_picture_mode(p_epd);
             p_epd->is_refreshing = true;
             p_epd->epd->drv->refresh(p_epd->epd);
             p_epd->is_refreshing = false;
+            s_bw_partial.base_valid = 0;
+            s_bw_partial.partial_refresh_count = 0;
             break;
 
         case EPD_CMD_SLEEP:
             if (p_epd->epd != NULL) {
                 p_epd->epd->drv->sleep(p_epd->epd);
             }
+            partial_invalidate_base(p_epd);
             break;
 
         /* Legacy time/config commands are retained only for wire compatibility.
@@ -267,6 +533,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (length < 3 || p_epd->epd == NULL) {
                 break;
             }
+            partial_invalidate_base(p_epd);
             epd_use_picture_mode(p_epd);
             p_epd->epd->drv->write_ram(
                 p_epd->epd, p_data[1], &p_data[2], length - 2);
@@ -277,13 +544,12 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                 break;
             }
 
-            uint16_t block_id = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
-            uint16_t total_blocks = (uint16_t)p_data[3] | ((uint16_t)p_data[4] << 8);
+            uint16_t block_id = read_le16(&p_data[1]);
+            uint16_t total_blocks = read_le16(&p_data[3]);
             uint8_t cfg = p_data[5];
             uint16_t payload_len = length - 8;
             uint8_t* payload = &p_data[6];
-            uint16_t recv_crc = (uint16_t)p_data[length - 2] |
-                                ((uint16_t)p_data[length - 1] << 8);
+            uint16_t recv_crc = read_le16(&p_data[length - 2]);
             uint16_t calc_crc = crc16_compute(payload, payload_len);
 
             if (calc_crc != recv_crc) {
@@ -292,12 +558,21 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                 break;
             }
 
+            if (s_bw_partial.active) {
+                partial_write_block(
+                    p_epd, block_id, total_blocks, payload, payload_len);
+                break;
+            }
+
+            /* Legacy BWR transfer path remains wire-compatible. */
             if (block_id >= EPD_MAX_BLOCKS || block_id >= total_blocks ||
                 total_blocks == 0 || total_blocks > EPD_MAX_BLOCKS) {
                 send_block_response(p_epd, block_id, 0x02);
                 break;
             }
 
+            s_bw_partial.base_valid = 0;
+            s_bw_partial.partial_refresh_count = 0;
             if (block_id == 0 || !p_epd->transfer_ctx.transfer_active) {
                 p_epd->transfer_ctx.total_blocks = total_blocks;
                 p_epd->transfer_ctx.received_blocks = 0;
@@ -327,16 +602,32 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             break;
 
         case EPD_CMD_RESET_TRANSFER:
-            memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
+            partial_cancel_transfer(p_epd);
             if (length > 1) {
                 p_epd->transfer_ctx.session_id = p_data[1];
             }
+            NRF_LOG_INFO("[EPD]: transfer reset, partial base=%d count=%d\n",
+                         s_bw_partial.base_valid,
+                         s_bw_partial.partial_refresh_count);
             break;
+
+        case EPD_CMD_BW_PARTIAL_BEGIN: {
+            epd_partial_status_t status = partial_begin(p_epd, p_data, length);
+            send_partial_response(p_epd, EPD_CMD_BW_PARTIAL_BEGIN, status);
+            break;
+        }
+
+        case EPD_CMD_BW_PARTIAL_REFRESH: {
+            epd_partial_status_t status = partial_refresh(p_epd);
+            send_partial_response(p_epd, EPD_CMD_BW_PARTIAL_REFRESH, status);
+            break;
+        }
 
         case EPD_CMD_SET_CONFIG:
             if (length < 2) {
                 break;
             }
+            partial_invalidate_base(p_epd);
             memcpy(&p_epd->config, &p_data[1],
                    (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
             /* Preserve struct size/field order, but normalize deprecated modes. */
@@ -345,6 +636,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             break;
 
         case EPD_CMD_SYS_SLEEP:
+            partial_invalidate_base(p_epd);
             sleep_mode_enter();
             break;
 
@@ -503,6 +795,7 @@ static uint32_t epd_service_init(ble_epd_t* p_epd) {
 
 void ble_epd_sleep_prepare(ble_epd_t* p_epd) {
     EPD_LED_OFF();
+    partial_invalidate_base(p_epd);
     if (p_epd->config.wakeup_pin != 0xFF) {
         nrf_gpio_cfg_sense_input(
             p_epd->config.wakeup_pin, NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_SENSE_HIGH);
@@ -514,6 +807,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
         return NRF_ERROR_NULL;
     }
 
+    memset(&s_bw_partial, 0, sizeof(s_bw_partial));
     p_epd->max_data_len = BLE_EPD_MAX_DATA_LEN;
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
